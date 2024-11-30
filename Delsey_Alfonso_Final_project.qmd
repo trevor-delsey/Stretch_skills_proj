@@ -1,7 +1,7 @@
 ---
-title: ""
+title: "Stretch Skills Project"
 subtitle: ""
-author: "Trevor Delsey"
+authors: "Trevor Delsey and Cirell Alfonso"
 output: html_document
 format: 
   html: 
@@ -20,5 +20,14 @@ library(tidyverse)
 library(survminer)
 library(here)
 library(broom)
+library(tidymodels)
+library(glmnet)
+library(pROC)
+```
+
+```{r}
+# Load data
+
+load(here("data/modeling_project.rda"))
 ```
 
