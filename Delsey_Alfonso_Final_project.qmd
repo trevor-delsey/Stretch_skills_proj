@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 ---
 title: "Stretch Skills Project"
 subtitle: ""
@@ -32,3 +33,6 @@ load(here("data/modeling_project.rda"))
 ```
 
 #this is a different test
+
+#this is a test
+
