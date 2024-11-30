@@ -1,0 +1,24 @@
+---
+title: ""
+subtitle: ""
+author: "Trevor Delsey"
+output: html_document
+format: 
+  html: 
+    link-external-newwindow: true
+    toc: true
+    embed-resources: true
+    self-contained: true
+  pdf: default 
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set( warning = FALSE, message = FALSE)
+```
+``` {r libsetup}
+library(survival)
+library(tidyverse)
+library(survminer)
+library(here)
+library(broom)
+```
+
