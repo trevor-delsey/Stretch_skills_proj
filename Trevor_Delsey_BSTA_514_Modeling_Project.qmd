@@ -30,13 +30,15 @@ library(janitor)
 Here I will use skim to examine the variables in the dataset. I am particularly interested in looking at NAs.
 
 ```{r}
-metabric <- read_csv(here("data/Breast_Cancer_METABRIC.csv"))
+metabric_raw <- read_csv(
+  "C:\\Users\\trevo\\Desktop\\Time To Event\\data\\Breast_Cancer_METABRIC.csv"
+  )
 
-skimr::skim(metabric)
+skimr::skim(metabric_raw)
 ```
 
 ```{r}
-metabric <- metabric %>% 
+metabric <- metabric_raw %>% 
   clean_names() %>% 
   mutate(
     relapse = case_when
@@ -63,7 +65,8 @@ metabric <- metabric %>%
                                             "Pre"), "Missing")
     ) %>% 
 
-  select(patient_id, cohort, age_at_diagnosis, 
+  select(patient_id, cohort, age_at_diagnosis, type_of_breast_surgery, neoplasm_histologic_grade,
+                  integrative_cluster, primary_tumor_laterality, pr_status, 
                   cancer_type_detailed, pam50_claudin_low_subtype, 
                   er_status, hormone_therapy, inferred_menopausal_state,
                   lymph_nodes_examined_positive, mutation_count, nottingham_prognostic_index,
@@ -71,7 +74,7 @@ metabric <- metabric %>%
                   relapse_free_status_months, chemotherapy,
                   x3_gene_classifier_subtype, tumor_size, tumor_stage)
 
-
+skimr::skim(metabric)
 ```
 
 Tumor stage is a variable of interest to me that has a large number of missing values so I will use some summaries and tables to see if there are any specific patterns to these NAs. 
@@ -109,11 +112,10 @@ So it seems that there these missing values are almost completely explained by t
 
 ```{r}
 metabric$tumor_stage[is.na(metabric$tumor_stage)] <- 2
-metabric$chemotherapy[is.na(metabric$chemotherapy)] <- "Missing"
-metabric$pam50_claudin_low_subtype[is.na(metabric$pam50_claudin_low_subtype)] <- "Missing"
-metabric$hormone_therapy[is.na(metabric$hormone_therapy)] <- "Missing"
-metabric$radio_therapy[is.na(metabric$radio_therapy)] <- "Missing"
-metabric$inferred_menopausal_state[is.na(metabric$inferred_menopausal_state)] <- "Missing"
+
+metabric <- metabric %>% 
+  mutate(across(where(is.character), function(x) replace_na(x, "Missing")
+  ))
 ```
 
 Now I will start creating survival curves to examine the effect of these variables.
@@ -143,6 +145,9 @@ ggsurvplot(metabric_fit, data = metabric, risk.table = F,
 Now I am going to look at the curves stratified by the categorical variables. Note: I have removed several variables that seemed poorly coded or redundant ie. cancer type, x3 gene, cellularity, etc. 
 
 ```{r}
+attach(metabric)
+surv <- Surv(time = relapse_free_status_months, event = relapse)
+
 metabric_tumor_stage_fit <- surv_fit(
   Surv(time = relapse_free_status_months, event = relapse) ~ tumor_stage, 
                          data = metabric)
@@ -175,6 +180,18 @@ metabric_er_fit <- surv_fit(
   Surv(time = relapse_free_status_months, event = relapse) ~ er_status, 
                          data = metabric)
 
+metabric_surg_type_fit <- surv_fit(surv ~ type_of_breast_surgery, data = metabric)
+
+metabric_neoplasm_fit <- surv_fit(surv ~ neoplasm_histologic_grade, data = metabric)
+
+metabric_cluster_fit <- surv_fit(surv ~ integrative_cluster, data = metabric)
+
+metabric_laterality_fit <- surv_fit(surv ~ primary_tumor_laterality, data = metabric)
+
+metabric_pr_fit <- surv_fit(surv ~ pr_status, data = metabric)
+
+metabric_x3_fit <- surv_fit(surv ~ x3_gene_classifier_subtype, data = metabric)
+
 ```
 
 After going through the data here are the main categorical variables that are left in the dataset. I have created survival curves for each of them.
@@ -188,25 +205,24 @@ ggsurvplot(metabric_tumor_stage_fit, data = metabric, risk.table = F,
 
 ggsurvplot(metabric_npi_fit, data = metabric, risk.table = F, conf.int = F, 
            surv.median.line = "hv", 
-           legend.labs = paste("Level", 1:4),
            legend.title = "NPI") +
   labs(title = "KM Survival Curve - by NPI")
 
 ggsurvplot(metabric_radio_fit, data = metabric, risk.table = F, conf.int = F, 
            surv.median.line = "hv", 
-           legend.labs = c("No", "Yes", "NA"), 
+           legend.labs = c("No", "Yes", "Missing"), 
            legend.title = "Radio Therapy") +
   labs(title = "KM Survival Curve - by Radio Therapy Status")
 
   ggsurvplot(metabric_chemo_fit, data = metabric, risk.table = F, conf.int = F, 
            surv.median.line = "hv", 
-           legend.labs = c("No", "Yes", "NA"),
+           legend.labs = c("No", "Yes", "Missing"),
            legend.title = "Chemotherapy") +
   labs(title = "KM Survival Curve - by Chemotherapy Status")
 
 ggsurvplot(metabric_hormone_fit, data = metabric, risk.table = F, conf.int = F, 
            surv.median.line = "hv", 
-           legend.labs = c("No", "Yes", "NA"),
+           legend.labs = c("No", "Yes", "Missing"),
            legend.title = "Hormone Therapy") +
   labs(title = "KM Survival Curve - by Hormone Therapy Status")
 
@@ -218,9 +234,28 @@ ggsurvplot(metabric_menopause_fit, data = metabric, risk.table = F, conf.int = F
 
 ggsurvplot(metabric_er_fit, data = metabric, risk.table = F, conf.int = F, 
            surv.median.line = "hv", 
-           legend.labs = c("Negative", "Positive"),
+           legend.labs = c("Negative", "Positive", "Missing"),
            legend.title = "ER Status") +
   labs(title = "KM Survival Curve - by ER Status")
+
+ggsurvplot(metabric_cluster_fit, data = metabric, risk.table = F, conf.int = F, 
+           surv.median.line = "hv")
+
+ggsurvplot(metabric_laterality_fit, data = metabric, risk.table = F, conf.int = F, 
+           surv.median.line = "hv")
+
+ggsurvplot(metabric_neoplasm_fit, data = metabric, risk.table = F, conf.int = F, 
+           surv.median.line = "hv")
+
+ggsurvplot(metabric_pr_fit, data = metabric, risk.table = F, conf.int = F, 
+           surv.median.line = "hv")
+
+ggsurvplot(metabric_surg_type_fit, data = metabric, risk.table = F, conf.int = F, 
+           surv.median.line = "hv")
+
+ggsurvplot(metabric_x3_fit, data = metabric, risk.table = F, conf.int = F, 
+           surv.median.line = "hv")
+
 
 
 ```
@@ -239,43 +274,79 @@ pam_50_km <- ggsurvplot(metabric_pam50_claudin_fit, data = metabric, risk.table 
 After examining these curves I believe that there may be several variables that are not significant. I will use several log-rank tests to assess those that look close to being insignificant. 
 
 ```{r}
-survdiff(Surv(time = relapse_free_status_months, event = relapse) ~ chemotherapy, rho = 0)
+chisqs_diff <- list(
+  
+chemo = survdiff(Surv(time = relapse_free_status_months, event = relapse) ~ chemotherapy, rho = 0),
 
-survdiff(Surv(time = relapse_free_status_months, event = relapse) ~ radio_therapy, rho = 0)
+radio = survdiff(Surv(time = relapse_free_status_months, event = relapse) ~ radio_therapy, rho = 0),
 
-survdiff(Surv(time = relapse_free_status_months, event = relapse) ~ hormone_therapy, rho = 0)
+hormone = survdiff(Surv(time = relapse_free_status_months, event = relapse) ~ hormone_therapy, rho = 0),
 
-survdiff(Surv(time = relapse_free_status_months, event = relapse) ~ pam50_claudin_low_subtype, 
-         rho = 0)
+pam50 = survdiff(Surv(time = relapse_free_status_months, event = relapse) ~ pam50_claudin_low_subtype, 
+         rho = 0),
 
-survdiff(Surv(time = relapse_free_status_months, event = relapse) ~ inferred_menopausal_state, 
-         rho = 0)
+menopause = survdiff(Surv(time = relapse_free_status_months, event = relapse) ~ inferred_menopausal_state, 
+         rho = 0),
 
-survdiff(Surv(time = relapse_free_status_months, event = relapse) ~ er_status, 
-         rho = 0)
+er = survdiff(Surv(time = relapse_free_status_months, event = relapse) ~ er_status, 
+         rho = 0),
+
+cluster = survdiff(surv ~ integrative_cluster, rho = 0),
+
+laterality = survdiff(surv ~ primary_tumor_laterality, rho = 0),
+
+type_surg = survdiff(surv ~ type_of_breast_surgery, rho = 0),
+
+pr = survdiff(surv ~ pr_status, rho = 0),
+
+cancer_type = survdiff(surv ~ cancer_type_detailed, rho = 0),
+
+x3 = survdiff(surv ~ x3_gene_classifier_subtype, rho = 0)
+
+)
+
+survdiff(surv ~ neoplasm_histologic_grade, rho = 0)
+
+map(chisqs_diff, function(x) x$pvalue > 0.25)
+
+vars <- c("radio", "hormone", "cancer_type")
+
 ```
 I will remove variables that exceed a p-value of 0.25 from these log-rank tests. I will also be removing variable if they have minimal change on the median time to relapse. From these tests I think it is reasonable to throw out the hormone therapy and radio therapy variables due to high p-values. I am also removing the er_status variable because of the very small change in median time to relapse. I will be using "Pam 50 + Claudin Low" as my main variable of interest going forward. 
 
 Now I will start fitting models to find useful continuous variables 
 
 ```{r}
-metabric_surv <- Surv(time = relapse_free_status_months, event = relapse)
+metabric <- metabric %>% 
+  select(
+    -radio_therapy, 
+    -hormone_therapy, 
+    -er_status, 
+    -cancer_type_detailed
+  ) %>% 
+  mutate(neoplasm_histologic_grade = as.character(neoplasm_histologic_grade))
 
-age_model <- coxph(metabric_surv ~ age_at_diagnosis, data = metabric)
+age_model <- coxph(surv ~ age_at_diagnosis, data = metabric)
 age_model
 
-lymph_model <- coxph(metabric_surv ~ lymph_nodes_examined_positive, data = metabric)
+lymph_model <- coxph(surv ~ lymph_nodes_examined_positive, data = metabric)
 lymph_model
 
-mutation_model <- coxph(metabric_surv ~ mutation_count, data = metabric)
+mutation_model <- coxph(surv ~ mutation_count, data = metabric)
 mutation_model
 
-tumor_size_model <- coxph(metabric_surv ~ tumor_size, data = metabric)
+tumor_size_model <- coxph(surv ~ tumor_size, data = metabric)
 tumor_size_model
 
-reduced_model <- coxph(metabric_surv ~ pam50_claudin_low_subtype, data = metabric)
+reduced_model <- coxph(surv ~ pam50_claudin_low_subtype, data = metabric)
 
 tidy(reduced_model)
+
+
+metabric <- metabric %>% 
+  select(
+    -mutation_count
+  )
 ```
 
 I like the looks of the tumor size variable and the lymph nodes examined positive variables. 

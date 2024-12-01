@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 ---
 title: "Stretch Skills Project"
 subtitle: ""
@@ -32,7 +31,30 @@ library(pROC)
 load(here("data/modeling_project.rda"))
 ```
 
-#this is a different test
+```{r}
+split <- initial_split(metabric, 0.8)
 
-#this is a test
+training <- training(split)
+testing <- testing(split)
+
+```
+
+```{r}
+cox_model <- proportional_hazards(
+  penalty = tune(),         # For LASSO/Elastic Net (use NULL for plain Cox model)
+  mixture = 1               # 1 = LASSO, 0 = Ridge, 0 < mixture < 1 = Elastic Net
+) %>% 
+  set_engine("glmnet")    
+```
+
+```{r}
+attach(training)
+surv <-  Surv(time = relapse_free_status_months, event = relapse)
+Surv(time = relapse_free_status_months, event = relapse) ~ .
+
+cox_workflow <- workflow() %>%
+  add_model(cox_model) %>%
+  add_formula(surv)
+```
+
 
