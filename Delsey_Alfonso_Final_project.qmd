@@ -11,6 +11,7 @@ format:
     self-contained: true
   pdf: default 
 ---
+
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set( warning = FALSE, message = FALSE)
 ```
@@ -26,25 +27,46 @@ library(here)
 
 ```{r}
 # Load data
-set.seed(123)
+set.seed(12345)
 load(here("data/modeling_project.rda"))
+
+metabric_modeling <- metabric %>% 
+  filter(!is.na(relapse_free_status_months) & !is.na(relapse))
 
 ```
 
 ```{r "Adding Time Varying Covariates"}
 
-cox_ph_test <- cox.zph(fullmodel)
-cox_ph_test # all pass ph test
+metabric_modeling <-  metabric_modeling  %>% 
+  mutate(age_interval = cut(age_at_diagnosis, breaks = c(21.93, 30, 50, 70, 96.29)))
+  
 
-metabric_modeling <- metabric %>% 
-  filter(!is.na(relapse_free_status_months) & !is.na(relapse)) %>% 
+fullmodel <- coxph(
+  Surv(relapse_free_status_months, relapse) ~ 
+    pam50_claudin_low_subtype +
+    age_at_diagnosis +
+    strata(cohort) +
+    inferred_menopausal_state +
+    lymph_nodes_examined_positive +
+    npi_cat +
+    chemotherapy +
+    tumor_size +
+    tumor_stage +
+    type_of_breast_surgery + 
+    strata(neoplasm_histologic_grade) +
+    strata(integrative_cluster) +
+    primary_tumor_laterality +
+    strata(x3_gene_classifier_subtype),
+  data = metabric_modeling, 
+  tt = function(x, t, ...) prod(x * log(t +0.001), na.rm = T))
+
+cox.zph(fullmodel)
+
+metabric_modeling <- metabric_modeling %>% 
   mutate(metabric_surv = survival::Surv(time = relapse_free_status_months + .001, event = relapse == 1), 
          .keep = "unused") %>% 
-  select(-patient_id, -nottingham_prognostic_index, -cohort) %>% 
+  select(-patient_id, -nottingham_prognostic_index) %>% 
   mutate(across(where(is.character), as_factor)) 
-
-metabric_modeling <- metabric_modeling %>%
-  filter(!is.na(metabric_surv[,"time"] & !is.na(metabric_surv[,"status"])))
 
 ```
 
@@ -64,22 +86,29 @@ cox_model <- proportional_hazards(
   set_engine("glmnet") %>% 
   set_mode("censored regression")
 
-cox_recipe <-  recipe(formula = metabric_surv ~ ., data = training) %>% 
-  step_dummy(all_nominal_predictors()) %>% 
-  step_unknown(all_nominal_predictors()) %>% 
-  step_impute_median(all_numeric_predictors())
-
-prepped_recipe <- cox_recipe %>% prep()
-baked_data <- prepped_recipe %>% bake(new_data = training)
-
-sum(training$metabric_surv[,"time"] == 0)
-
 ```
 
 ```{r}
 cox_workflow <- workflow() %>%
-  add_model(cox_model) %>%
-  add_recipe(cox_recipe)
+  step_dummy(all_nominal_predictors()) %>% 
+  step_unknown(all_nominal_predictors()) %>% 
+  step_impute_median(all_numeric_predictors()) %>% 
+  add_model(cox_model) %>% 
+  add_formula(formula = metabric_surv ~  pam50_claudin_low_subtype +
+    age_at_diagnosis +
+    strata(cohort) +
+    inferred_menopausal_state +
+    lymph_nodes_examined_positive +
+    npi_cat +
+    chemotherapy +
+    tumor_size +
+    tumor_stage +
+    type_of_breast_surgery + 
+    strata(neoplasm_histologic_grade) +
+    strata(integrative_cluster) +
+    primary_tumor_laterality +
+    strata(x3_gene_classifier_subtype))
+
 
 ```
 
@@ -94,10 +123,10 @@ grid <- grid_regular(penalty(), levels = 10)
 #   cox_workflow,
 #   grid = grid,
 #   resamples = cv_folds,
-#   eval_time = seq(10, max(training$metabric_surv[,1]), by = 50),
-#   metrics = survival_metrics
+#   metrics = survival_metrics,
+#   eval_time = seq(10, max(training$metabric_surv[,1]), by = 100)
 # )
-
+# 
 # save(tune_results, file = here("data", "tune_results.rda"))
 
 load(file = here("data", "tune_results.rda"))
@@ -111,6 +140,8 @@ best_penalty_brier <- tune_results %>%
 best_penalty_roc_auc <- tune_results %>%
   select_best(metric = "roc_auc_survival")
 
+
+
 ```
 
 ```{r}
@@ -118,20 +149,19 @@ final_workflow <- finalize_workflow(cox_workflow, best_penalty_concord)
 
 final_fit <- fit(final_workflow, training)
 
-pull_workflow_fit(final_fit) %>% tidy() %>% filter(estimate != 0)
+Coeff_estimates <- pull_workflow_fit(final_fit) %>% tidy() %>% filter(estimate != 0)
+
+Coeff_estimates <- Coeff_estimates %>% select(term, estimate) %>% 
+  mutate(exp_estim = exp(estimate))
+
 
 final_cox_fit <- last_fit(
   final_workflow, 
   split = split,
-  metrics = survival_metrics, 
-  eval_time = seq(10, max(training$metabric_surv[,1]), by = 50)
+  metrics = metric_set(concordance_survival), 
 )
 
-
-final_cox_fit %>% collect_metrics() %>% ggplot(aes(.eval_time, .estimate, color = .metric)) +
-  geom_smooth()
-
-final_cox_fit %>% collect_metrics() %>% filter(.eval_time == 210 | is.na(.eval_time))
+final_cox_fit %>% collect_metrics()
 ```
 
 

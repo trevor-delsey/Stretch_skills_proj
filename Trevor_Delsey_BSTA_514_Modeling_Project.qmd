@@ -72,7 +72,8 @@ metabric <- metabric_raw %>%
                   lymph_nodes_examined_positive, mutation_count, nottingham_prognostic_index,
                   npi_cat, radio_therapy, relapse_free_status_months, relapse,
                   relapse_free_status_months, chemotherapy,
-                  x3_gene_classifier_subtype, tumor_size, tumor_stage)
+                  x3_gene_classifier_subtype, tumor_size, tumor_stage) %>% 
+  filter(!is.na(relapse) & !is.na(relapse_free_status_months))
 
 skimr::skim(metabric)
 ```
@@ -331,6 +332,9 @@ surv <- Surv(metabric$relapse_free_status_months, event = metabric$relapse)
 age_model <- coxph(surv ~ age_at_diagnosis, data = metabric)
 age_model
 
+martingale_res <- residuals(age_model, type = "martingale")
+plot(metabric$age_at_diagnosis, martingale_res, ylab = "Martingale Residuals")
+
 lymph_model <- coxph(surv ~ lymph_nodes_examined_positive, data = metabric)
 lymph_model
 
@@ -344,6 +348,25 @@ reduced_model <- coxph(surv ~ pam50_claudin_low_subtype, data = metabric)
 
 tidy(reduced_model)
 
+attach(metabric) 
+numeric_vars <- c("age_at_diagnosis", "lymph_nodes_examined_positive", "tumor_size")
+
+for (i in numeric_vars) {
+
+   mod <- coxph(surv ~ metabric[[i]], data = metabric)
+
+
+   martingale_res <- residuals(mod, type = "martingale")
+
+
+   plot(
+     na.omit(metabric[[i]]), 
+     martingale_res, 
+     ylab = "Martingale Residuals", 
+     xlab = i,
+     main = paste("Martingale Residuals for", i)
+   )
+}
 
 metabric <- metabric %>% 
   select(
@@ -370,18 +393,38 @@ fullmodel <- coxph(Surv(relapse_free_status_months, relapse) ~ pam50_claudin_low
                      npi_cat +
                      chemotherapy +
                      tumor_size  +
-                     strata(tumor_stage) +
-                     strata(type_of_breast_surgery) +
+                     tumor_stage +
+                     type_of_breast_surgery +
                      neoplasm_histologic_grade +
                      integrative_cluster +
-                     strata(primary_tumor_laterality) +
+                     primary_tumor_laterality +
                      pr_status+
-                     x3_gene_classifier_subtype +
-                     lymph_time +
-                     tumor_size_time, data = metabric)
+                     x3_gene_classifier_subtype, data = metabric)
 
 tidy(fullmodel)
 tidy(reduced_model)
+
+#Only tumor stage type of breast lymph positive and primary laterality work with this assumption so lets transform
+
+cox.zph(fullmodel)
+
+
+full_model_transform <- cox.zph(Surv(relapse_free_status_months, relapse) ~ pam50_claudin_low_subtype +
+                     age_at_diagnosis +
+                     tt(age_at_diagnosis) +
+                     cohort +
+                     inferred_menopausal_state +
+                     lymph_nodes_examined_positive +
+                     npi_cat +
+                     chemotherapy +
+                     tumor_size  +
+                     tumor_stage +
+                     type_of_breast_surgery +
+                     neoplasm_histologic_grade +
+                     integrative_cluster +
+                     primary_tumor_laterality +
+                     pr_status+
+                     x3_gene_classifier_subtype, data = metabric)
 ```
 
 ```{r}
