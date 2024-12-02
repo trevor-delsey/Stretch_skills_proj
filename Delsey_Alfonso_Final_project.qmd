@@ -15,46 +15,123 @@ format:
 knitr::opts_chunk$set( warning = FALSE, message = FALSE)
 ```
 ``` {r libsetup}
-library(survival)
 library(tidyverse)
+library(survival)
 library(survminer)
-library(here)
-library(broom)
 library(tidymodels)
 library(glmnet)
-library(pROC)
+library(censored)
+library(here)
 ```
 
 ```{r}
 # Load data
-
+set.seed(123)
 load(here("data/modeling_project.rda"))
+
+```
+
+```{r "Adding Time Varying Covariates"}
+
+cox_ph_test <- cox.zph(fullmodel)
+cox_ph_test # all pass ph test
+
+metabric_modeling <- metabric %>% 
+  filter(!is.na(relapse_free_status_months) & !is.na(relapse)) %>% 
+  mutate(metabric_surv = survival::Surv(time = relapse_free_status_months + .001, event = relapse == 1), 
+         .keep = "unused") %>% 
+  select(-patient_id, -nottingham_prognostic_index, -cohort) %>% 
+  mutate(across(where(is.character), as_factor)) 
+
+metabric_modeling <- metabric_modeling %>%
+  filter(!is.na(metabric_surv[,"time"] & !is.na(metabric_surv[,"status"])))
+
 ```
 
 ```{r}
-split <- initial_split(metabric, 0.8)
+split <- initial_split(metabric_modeling, prop = 0.8)
 
-training <- training(split)
+training <- as.data.frame(training(split))
 testing <- testing(split)
 
 ```
 
 ```{r}
 cox_model <- proportional_hazards(
-  penalty = tune(),         # For LASSO/Elastic Net (use NULL for plain Cox model)
-  mixture = 1               # 1 = LASSO, 0 = Ridge, 0 < mixture < 1 = Elastic Net
+  penalty = tune(), 
+  mixture = 1
 ) %>% 
-  set_engine("glmnet")    
+  set_engine("glmnet") %>% 
+  set_mode("censored regression")
+
+cox_recipe <-  recipe(formula = metabric_surv ~ ., data = training) %>% 
+  step_dummy(all_nominal_predictors()) %>% 
+  step_unknown(all_nominal_predictors()) %>% 
+  step_impute_median(all_numeric_predictors())
+
+prepped_recipe <- cox_recipe %>% prep()
+baked_data <- prepped_recipe %>% bake(new_data = training)
+
+sum(training$metabric_surv[,"time"] == 0)
+
 ```
 
 ```{r}
-attach(training)
-surv <-  Surv(time = relapse_free_status_months, event = relapse)
-Surv(time = relapse_free_status_months, event = relapse) ~ .
-
 cox_workflow <- workflow() %>%
   add_model(cox_model) %>%
-  add_formula(surv)
+  add_recipe(cox_recipe)
+
+```
+
+```{r}
+survival_metrics <- metric_set(brier_survival, concordance_survival, roc_auc_survival)
+
+cv_folds <- vfold_cv(training, v = 10)
+
+grid <- grid_regular(penalty(), levels = 10)
+
+# tune_results <- tune_grid(
+#   cox_workflow,
+#   grid = grid,
+#   resamples = cv_folds,
+#   eval_time = seq(10, max(training$metabric_surv[,1]), by = 50),
+#   metrics = survival_metrics
+# )
+
+# save(tune_results, file = here("data", "tune_results.rda"))
+
+load(file = here("data", "tune_results.rda"))
+
+best_penalty_concord <- tune_results %>%
+  select_best(metric = "concordance_survival")
+
+best_penalty_brier <- tune_results %>%
+  select_best(metric = "brier_survival")
+
+best_penalty_roc_auc <- tune_results %>%
+  select_best(metric = "roc_auc_survival")
+
+```
+
+```{r}
+final_workflow <- finalize_workflow(cox_workflow, best_penalty_concord)
+
+final_fit <- fit(final_workflow, training)
+
+pull_workflow_fit(final_fit) %>% tidy() %>% filter(estimate != 0)
+
+final_cox_fit <- last_fit(
+  final_workflow, 
+  split = split,
+  metrics = survival_metrics, 
+  eval_time = seq(10, max(training$metabric_surv[,1]), by = 50)
+)
+
+
+final_cox_fit %>% collect_metrics() %>% ggplot(aes(.eval_time, .estimate, color = .metric)) +
+  geom_smooth()
+
+final_cox_fit %>% collect_metrics() %>% filter(.eval_time == 210 | is.na(.eval_time))
 ```
 
 

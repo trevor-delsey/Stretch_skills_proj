@@ -326,6 +326,8 @@ metabric <- metabric %>%
   ) %>% 
   mutate(neoplasm_histologic_grade = as.character(neoplasm_histologic_grade))
 
+surv <- Surv(metabric$relapse_free_status_months, event = metabric$relapse)
+
 age_model <- coxph(surv ~ age_at_diagnosis, data = metabric)
 age_model
 
@@ -353,14 +355,30 @@ I like the looks of the tumor size variable and the lymph nodes examined positiv
 Now I will use the change in estimate method to select my covariates further. I think it is safe to remove the mutation variable due to very high p-value. Now I will use the change in estimate method to select from here.
 
 ```{r}
-fullmodel <- coxph(metabric_surv ~ pam50_claudin_low_subtype +
+# tumor_stage, type_of_breast_cancer_surgery, tumor_size, 
+            # lymph_nodes_examined_positive failed
+
+metabric <- metabric %>% 
+  mutate(lymph_time = lymph_nodes_examined_positive * log(relapse_free_status_months + .001), 
+         tumor_size_time = tumor_size * log(relapse_free_status_months + .001))
+
+fullmodel <- coxph(Surv(relapse_free_status_months, relapse) ~ pam50_claudin_low_subtype +
                      age_at_diagnosis +
+                     cohort +
                      inferred_menopausal_state +
                      lymph_nodes_examined_positive +
                      npi_cat +
                      chemotherapy +
-                     tumor_size +
-                     tumor_stage, data = metabric)
+                     tumor_size  +
+                     strata(tumor_stage) +
+                     strata(type_of_breast_surgery) +
+                     neoplasm_histologic_grade +
+                     integrative_cluster +
+                     strata(primary_tumor_laterality) +
+                     pr_status+
+                     x3_gene_classifier_subtype +
+                     lymph_time +
+                     tumor_size_time, data = metabric)
 
 tidy(fullmodel)
 tidy(reduced_model)
@@ -372,68 +390,107 @@ avg_change_in_estim <- function(x, y = fullmodel) {
   
 }
 
-no_tumor_stage <- coxph(metabric_surv ~ pam50_claudin_low_subtype +
+no_tumor_stage <- coxph(surv ~ pam50_claudin_low_subtype +
                      age_at_diagnosis +
                      inferred_menopausal_state +
                      lymph_nodes_examined_positive +
                      npi_cat +
                      chemotherapy +
-                     tumor_size, data = metabric)
+                     tumor_size +
+                     type_of_breast_surgery +
+                     neoplasm_histologic_grade +
+                     integrative_cluster +
+                     primary_tumor_laterality +
+                     pr_status+
+                     x3_gene_classifier_subtype, data = metabric)
 
 avg_change_in_estim(no_tumor_stage) # < 10% avg change in estimate
 
-no_tumor_size <- coxph(metabric_surv ~ pam50_claudin_low_subtype +
+no_tumor_size <- coxph(surv ~ pam50_claudin_low_subtype +
                      age_at_diagnosis +
                      inferred_menopausal_state +
                      lymph_nodes_examined_positive +
                      npi_cat +
-                     chemotherapy, data = metabric)
+                     chemotherapy +
+                     type_of_breast_surgery +
+                     neoplasm_histologic_grade +
+                     integrative_cluster +
+                     primary_tumor_laterality +
+                     pr_status+
+                     x3_gene_classifier_subtype, data = metabric)
 
 avg_change_in_estim(no_tumor_size) # > 10%
 
-no_chemo <- coxph(metabric_surv ~ pam50_claudin_low_subtype +
+no_chemo <- coxph(surv ~ pam50_claudin_low_subtype +
                      age_at_diagnosis +
                      inferred_menopausal_state +
                      lymph_nodes_examined_positive +
                      npi_cat +
-                     tumor_size, data = metabric)
+                     tumor_size +
+                     type_of_breast_surgery +
+                     neoplasm_histologic_grade +
+                     integrative_cluster +
+                     primary_tumor_laterality +
+                     pr_status+
+                     x3_gene_classifier_subtype, data = metabric)
 
 avg_change_in_estim(no_chemo)# < 10% 
 
-no_npi <- coxph(metabric_surv ~ pam50_claudin_low_subtype +
+no_npi <- coxph(surv ~ pam50_claudin_low_subtype +
                      age_at_diagnosis +
                      inferred_menopausal_state +
                      lymph_nodes_examined_positive +
-                     tumor_size, data = metabric)
+                     tumor_size +
+                     type_of_breast_surgery +
+                     neoplasm_histologic_grade +
+                     integrative_cluster +
+                     primary_tumor_laterality +
+                     pr_status+
+                     x3_gene_classifier_subtype, data = metabric)
 
-avg_change_in_estim(no_npi)# > 10%
+avg_change_in_estim(no_npi)# < 10%
 
-no_lymph <- coxph(metabric_surv ~ pam50_claudin_low_subtype +
+no_lymph <- coxph(surv ~ pam50_claudin_low_subtype +
                      age_at_diagnosis +
                      inferred_menopausal_state +
-                     npi_cat +
                      chemotherapy +
-                     tumor_size, data = metabric)
+                     tumor_size +
+                     type_of_breast_surgery +
+                     neoplasm_histologic_grade +
+                     integrative_cluster +
+                     primary_tumor_laterality +
+                     pr_status+
+                     x3_gene_classifier_subtype, data = metabric)
 
 avg_change_in_estim(no_lymph) # >10%
 
-no_menopause <- coxph(metabric_surv ~ pam50_claudin_low_subtype +
+no_menopause <- coxph(surv ~ pam50_claudin_low_subtype +
                      age_at_diagnosis +
                      lymph_nodes_examined_positive +
-                     npi_cat +
-                     tumor_size, data = metabric)
+                     tumor_size +
+                     type_of_breast_surgery +
+                     neoplasm_histologic_grade +
+                     integrative_cluster +
+                     primary_tumor_laterality +
+                     pr_status+
+                     x3_gene_classifier_subtype, data = metabric)
 
 avg_change_in_estim(no_menopause) # > 10%
 
-no_age <- coxph(metabric_surv ~ pam50_claudin_low_subtype +
+no_age <- coxph(surv ~ pam50_claudin_low_subtype +
                      inferred_menopausal_state +
                      lymph_nodes_examined_positive +
-                     npi_cat +
-                     tumor_size, data = metabric)
+                     tumor_size +
+                     type_of_breast_surgery +
+                     neoplasm_histologic_grade +
+                     integrative_cluster +
+                     primary_tumor_laterality +
+                     pr_status+
+                     x3_gene_classifier_subtype, data = metabric)
 
 avg_change_in_estim(no_age)# > 10%
 
-final_model <- coxph(metabric_surv ~ pam50_claudin_low_subtype +
+final_model <- coxph(surv ~ pam50_claudin_low_subtype +
                      age_at_diagnosis +
                      inferred_menopausal_state +
                      lymph_nodes_examined_positive +
@@ -450,6 +507,8 @@ final_cohort_model <- coxph(metabric_surv ~ pam50_claudin_low_subtype +
                      tumor_size + cohort, data = metabric)
 
 avg_change_in_estim(final_cohort_model, final_model) # cohort seems to have a significant effect here so I think I will use this as the final model
+
+
 ```
 ```{r}
 ph_test <- cox.zph(final_cohort_model)
@@ -465,6 +524,6 @@ AIC(fullmodel)
 Managed to remove many variables without sacrificing AIC at all.
 
 ```{r}
-save(final_cohort_model, final_model, ph_test, metabric, pam_50_km, file = here("data/Modeling_project.Rda"))
+save(final_model, fullmodel, metabric, pam_50_km, file = here("data/Modeling_project.Rda"))
 ```
 
