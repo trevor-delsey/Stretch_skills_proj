@@ -51,33 +51,34 @@ metabric_modeling <- metabric %>%
 # In this bit I am tidying up the data but I had a lot of issues with multicolinearity so I am trying to figure out what is wrong. I found that the missing category in chemotherapy perfectly corresponds to that in like five other variables and this was throwing off the model. Also the MTS prefix perfectly corresponded to other missing values and that was messing up the model. I also simplified the categories for integrative cluster as I think that stratifying by integrative cluster with this many levels caused problems with some levels having very few observations.
 
 metabric_modeling <- metabric_modeling %>% 
-  filter(!grepl("^MTS-", patient_id)) %>% 
-  filter(chemotherapy != "Missing") %>%  
+  filter(chemotherapy != "Missing") %>% 
   select(-patient_id, -nottingham_prognostic_index) %>% 
   mutate(across(where(is.character), function(x) replace_na(x, "Missing"))) %>% 
   mutate(across(where(is.character), as_factor)) %>% 
   mutate(integrative_cluster = fct_collapse(integrative_cluster, "1-3" = c("1", "2", "3"),
                                             "4-6" = c("4ER+", "4ER-", "5", "6"),
-                                            "7-10" = c("7", "8", "9", "10")))
+                                            "7-10" = c("7", "8", "9", "10"))) %>% 
+  mutate(across(where(is.factor), factor))
+
 
 
 #Inferred Menopausal Status Perfectly Correlates with Age at diagnosis so is removed 
 # npi_cat is a combination of lymph_nodes tumor size and histologic grade so was removed as well
+# I am using a lm to check for collinearity as vif doesnt work with coxph and it doesnt change anything with the results
 
-vif_lm <- lm(relapse_free_status_months ~  
+vif_lm <- lm(relapse_free_status_months ~
     pam50_claudin_low_subtype +
-    age_at_diagnosis +
+    age_at_diagnosis+
     lymph_nodes_examined_positive +
-    tumor_size +
     chemotherapy +
+    tumor_size +
     tumor_stage +
-    type_of_breast_surgery +
+    type_of_breast_surgery + 
     neoplasm_histologic_grade +
-    primary_tumor_laterality +
-    integrative_cluster +
-    x3_gene_classifier_subtype
-    , data = metabric_modeling)
+    primary_tumor_laterality,
+    data = metabric_modeling)
 
+# I did this a few times and removed variables that had a GVIF > 10
 
 vif(vif_lm)
 
@@ -95,9 +96,9 @@ fullmodel <- coxph(
     neoplasm_histologic_grade +
     integrative_cluster +
     primary_tumor_laterality +
-    x3_gene_classifier_subtype +
     strata(x3_gene_classifier_subtype,integrative_cluster),
     data = metabric_modeling)
+
 
 # and this proves it
 cox.zph(fullmodel)
@@ -167,18 +168,12 @@ cox_workflow <- workflow() %>%
     tumor_stage +
     type_of_breast_surgery + 
     neoplasm_histologic_grade +
-    integrative_cluster +
     primary_tumor_laterality +
-    x3_gene_classifier_subtype +
     strata(x3_gene_classifier_subtype, integrative_cluster))
 
 # I am just testing to make sure the model will work here
 
 fit_test <- fit(cox_workflow, training)
-
-
-metabric_modeling <- metabric_modeling %>% 
-  mutate(pam50_claudin_low_subtype = fct_drop(pam50_claudin_low_subtype,"Missing"))
 
 # Again just fitting the model without lasso to compare later
 
@@ -208,7 +203,8 @@ cox_workflow_no_lasso <- workflow() %>%
     type_of_breast_surgery + 
     neoplasm_histologic_grade +
     primary_tumor_laterality +
-    strata(x3_gene_classifier_subtype, integrative_cluster))
+    strata(x3_gene_classifier_subtype) + 
+    strata(integrative_cluster))
 
 ```
 
@@ -227,14 +223,14 @@ cv_folds <- vfold_cv(training, v = 10)
 grid <- grid_regular(penalty(), levels = 10)
 
 # Here is the big one. It is going to test all 10 possible penalty values on all 10 of the folds and choose the one with the best concordance_survival metric (This legitimately takes like 15 minutes to run)
-
+# 
 # tune_results <- tune_grid(
 #   cox_workflow,
 #   grid = grid,
 #   resamples = cv_folds,
 #   metrics = survival_metrics,
 # )
-
+# 
 # save(tune_results, file = here("data", "tune_results.rda"))
 
 load(file = here("data", "tune_results.rda"))
@@ -282,7 +278,11 @@ final_cox_fit %>% collect_metrics()
 # Now lets compare with the model that didn't use lasso to see if this was all worth it
 
 final_fit_no_lasso <- fit(cox_workflow_no_lasso, training)
+
 Coeff_estimates_no_lasso <- pull_workflow_fit(final_fit_no_lasso) %>% tidy()
+
+Coeff_estimates_no_lasso <- Coeff_estimates_no_lasso %>% select(term, estimate) %>% 
+  mutate(exp_estim = exp(estimate))
 
 final_cox_fit_no_lasso <- last_fit(
   cox_workflow_no_lasso, 
@@ -291,5 +291,11 @@ final_cox_fit_no_lasso <- last_fit(
 )
 
 final_cox_fit_no_lasso %>% collect_metrics()
+
+
+# I think the biggest advantage of the lasso regularization is that it has fixed a lot of the multicolinearity issues
+# If you look at the metrics it seems like they are very similar but looking at the e^coefficient estimates
+# We can see that the no lasso model has some insanely huge coefficients where in the lasso model they all seem
+# reasonable. So I think this is the big takeaway from the project.
 ```
 
