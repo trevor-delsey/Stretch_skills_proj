@@ -24,6 +24,8 @@ library(glmnet)
 library(censored)
 library(here)
 library(skimr)
+library(car)
+
 ```
 
 ```{r}
@@ -37,44 +39,82 @@ load(here("data/modeling_project.rda"))
 metabric_modeling <- metabric %>% 
   filter(!is.na(relapse_free_status_months) & !is.na(relapse))
 
+
 ```
 
 ```{r "Adding Time Varying Covariates"}
 
 # I'm testing out the model the normal way to see if we satisfy the proportional hazards assumption, 
 # since we fail this assumption I am messing around with various combinations of time varying covariates and 
-# Stratification
+# Stratification 
+
+# In this bit I am tidying up the data but I had a lot of issues with multicolinearity so I am trying to figure out what is wrong. I found that the missing category in chemotherapy perfectly corresponds to that in like five other variables and this was throwing off the model. Also the MTS prefix perfectly corresponded to other missing values and that was messing up the model. I also simplified the categories for integrative cluster as I think that stratifying by integrative cluster with this many levels caused problems with some levels having very few observations.
+
+metabric_modeling <- metabric_modeling %>% 
+  filter(!grepl("^MTS-", patient_id)) %>% 
+  filter(chemotherapy != "Missing") %>%  
+  select(-patient_id, -nottingham_prognostic_index) %>% 
+  mutate(across(where(is.character), function(x) replace_na(x, "Missing"))) %>% 
+  mutate(across(where(is.character), as_factor)) %>% 
+  mutate(integrative_cluster = fct_collapse(integrative_cluster, "1-3" = c("1", "2", "3"),
+                                            "4-6" = c("4ER+", "4ER-", "5", "6"),
+                                            "7-10" = c("7", "8", "9", "10")))
+
+
+#Inferred Menopausal Status Perfectly Correlates with Age at diagnosis so is removed 
+# npi_cat is a combination of lymph_nodes tumor size and histologic grade so was removed as well
+
+vif_lm <- lm(relapse_free_status_months ~  
+    pam50_claudin_low_subtype +
+    age_at_diagnosis +
+    lymph_nodes_examined_positive +
+    tumor_size +
+    chemotherapy +
+    tumor_stage +
+    type_of_breast_surgery +
+    neoplasm_histologic_grade +
+    primary_tumor_laterality +
+    integrative_cluster +
+    x3_gene_classifier_subtype
+    , data = metabric_modeling)
+
+
+vif(vif_lm)
+
+# Okay So I fixed the colinearity thing a bit and now I want to make sure the full model would pass the proportional hazards assumption. I found that stratifying by these variables fixes the problem
 
 fullmodel <- coxph(
   Surv(relapse_free_status_months, relapse) ~ 
     pam50_claudin_low_subtype +
-    age_at_diagnosis +
-    inferred_menopausal_state +
+    age_at_diagnosis+
     lymph_nodes_examined_positive +
-    npi_cat +
     chemotherapy +
     tumor_size +
     tumor_stage +
     type_of_breast_surgery + 
-    strata(neoplasm_histologic_grade, cohort, integrative_cluster,
-           primary_tumor_laterality, x3_gene_classifier_subtype),
+    neoplasm_histologic_grade +
+    integrative_cluster +
+    primary_tumor_laterality +
+    x3_gene_classifier_subtype +
+    strata(x3_gene_classifier_subtype,integrative_cluster),
     data = metabric_modeling)
 
+# and this proves it
 cox.zph(fullmodel)
 
-schoenfeld_residuals <- as_tibble(residuals(fullmodel, type = "schoenfeld"), )
-
-
+# now I am setting up the dataset for the tidymodels approach by craeting a survival column
 
 metabric_modeling <- metabric_modeling %>% 
   mutate(metabric_surv = survival::Surv(time = relapse_free_status_months + .001, event = relapse == 1), 
-         .keep = "unused") %>% 
-  select(-patient_id, -nottingham_prognostic_index) %>% 
-  mutate(across(where(is.character), as_factor)) 
+         .keep = "unused") 
+  
+
 
 ```
 
 ```{r}
+# this is the split I will be using, Training for training the model and testing so that my final stats are not biased
+
 split <- initial_split(metabric_modeling, prop = 0.8)
 
 training <- as.data.frame(training(split))
@@ -83,6 +123,8 @@ testing <- testing(split)
 ```
 
 ```{r}
+# Here I am telling R what type of model to fit. I am tuning the penalty term of the lasso regression, mixture = 1 is for lasso 
+
 cox_model <- proportional_hazards(
   penalty = tune(), 
   mixture = 1
@@ -90,24 +132,22 @@ cox_model <- proportional_hazards(
   set_engine("glmnet") %>% 
   set_mode("censored regression")
 
+# I am setting up the exact same model but without the lasso because I wanted to be able to compare the two
+
 cox_model_no_lasso <- proportional_hazards() %>% 
   set_engine("survival")
 
 ```
 
 ```{r}
-cox_workflow <- workflow() %>%
-  step_dummy(all_nominal_predictors()) %>% 
-  step_unknown(all_nominal_predictors()) %>% 
-  step_impute_median(all_numeric_predictors()) %>% 
+# the workflow is a bit crazy looking but really I am just telling R what variables I want in my model and what the formula is for the model
+
+cox_workflow <- workflow() %>% 
   add_variables(metabric_surv, 
           c(
             pam50_claudin_low_subtype,
             age_at_diagnosis,
-            cohort,
-            inferred_menopausal_state,
             lymph_nodes_examined_positive,
-            npi_cat,
             chemotherapy,
             tumor_size,
             tumor_stage,
@@ -120,31 +160,34 @@ cox_workflow <- workflow() %>%
           ) %>% 
   add_model(cox_model, 
     formula = metabric_surv ~  pam50_claudin_low_subtype +
-    age_at_diagnosis +
-    inferred_menopausal_state +
+    age_at_diagnosis+
     lymph_nodes_examined_positive +
-    npi_cat +
     chemotherapy +
     tumor_size +
     tumor_stage +
     type_of_breast_surgery + 
-    strata(neoplasm_histologic_grade, cohort, integrative_cluster,
-           primary_tumor_laterality, x3_gene_classifier_subtype))
+    neoplasm_histologic_grade +
+    integrative_cluster +
+    primary_tumor_laterality +
+    x3_gene_classifier_subtype +
+    strata(x3_gene_classifier_subtype, integrative_cluster))
 
+# I am just testing to make sure the model will work here
 
 fit_test <- fit(cox_workflow, training)
 
 
+metabric_modeling <- metabric_modeling %>% 
+  mutate(pam50_claudin_low_subtype = fct_drop(pam50_claudin_low_subtype,"Missing"))
+
+# Again just fitting the model without lasso to compare later
+
 cox_workflow_no_lasso <- workflow() %>%
-  step_unknown(all_nominal_predictors(), "Missing") %>% 
   add_variables(metabric_surv, 
           c(
             pam50_claudin_low_subtype,
             age_at_diagnosis,
-            cohort,
-            inferred_menopausal_state,
             lymph_nodes_examined_positive,
-            npi_cat,
             chemotherapy,
             tumor_size,
             tumor_stage,
@@ -156,60 +199,73 @@ cox_workflow_no_lasso <- workflow() %>%
             )
           ) %>% 
   add_model(cox_model_no_lasso,
-            formula = metabric_surv ~  pam50_claudin_low_subtype +
-            age_at_diagnosis +
-            strata(cohort) +
-            inferred_menopausal_state +
-            lymph_nodes_examined_positive +
-            npi_cat +
-            chemotherapy +
-            tumor_size +
-            tumor_stage +
-            type_of_breast_surgery + 
-            strata(neoplasm_histologic_grade) +
-            strata(integrative_cluster) +
-            strata(primary_tumor_laterality) +
-            strata(x3_gene_classifier_subtype))
+             formula = metabric_surv ~  pam50_claudin_low_subtype +
+    age_at_diagnosis+
+    lymph_nodes_examined_positive +
+    chemotherapy +
+    tumor_size +
+    tumor_stage +
+    type_of_breast_surgery + 
+    neoplasm_histologic_grade +
+    primary_tumor_laterality +
+    strata(x3_gene_classifier_subtype, integrative_cluster))
 
 ```
 
 ```{r}
+# Here I am telling R what metric to judge the effectiveness of the lasso with
+# I chose concordance survival because it is simple. It is essentially just the proportion of times the model can correctly choose which of every pair of observations will relapse first so 50% is a coin toss and everything higher is better
+
 survival_metrics <- metric_set(concordance_survival)
 
-cv_folds <- vfold_cv(training, v = 2)
+# Here I am useing cross fold validation So I am splitting the training data into 10 pieces and fitting the model with 9 and testing on the last piece then doing that so every chunk has been tested on. This is so that it can compare multiple versions of the same model but not have biased results from overfitting. 
 
-grid <- grid_regular(penalty(), levels = 2)
+cv_folds <- vfold_cv(training, v = 10)
 
-tune_results <- tune_grid(
-  cox_workflow,
-  grid = grid,
-  resamples = cv_folds,
-  metrics = survival_metrics,
-)
+# This is just a set of lasso penalty values that R is going to compare
 
-save(tune_results, file = here("data", "tune_results.rda"))
+grid <- grid_regular(penalty(), levels = 10)
+
+# Here is the big one. It is going to test all 10 possible penalty values on all 10 of the folds and choose the one with the best concordance_survival metric (This legitimately takes like 15 minutes to run)
+
+# tune_results <- tune_grid(
+#   cox_workflow,
+#   grid = grid,
+#   resamples = cv_folds,
+#   metrics = survival_metrics,
+# )
+
+# save(tune_results, file = here("data", "tune_results.rda"))
 
 load(file = here("data", "tune_results.rda"))
+
+# I am just getting the best penalty value 
 
 best_penalty_concord <- tune_results %>%
   select_best(metric = "concordance_survival")
 
-
 ```
 
 ```{r}
+# and Now I am updating the workflow from before so that instead of tune() it will now use the best penalty
+
 final_workflow <- finalize_workflow(cox_workflow, best_penalty_concord)
+
+# And I am fitting this new model
 
 final_fit <- fit(final_workflow, training)
 
-
+# and here it is
+# the model fit on the training data and here are the coefficients. I filtered out the ones that lasso shrunk down to zero to see what we have left.
 
 Coeff_estimates <- pull_workflow_fit(final_fit) %>% tidy() %>% filter(estimate != 0)
+
+# Here I am just exponentiating so we can interpret the coefficients
 
 Coeff_estimates <- Coeff_estimates %>% select(term, estimate) %>% 
   mutate(exp_estim = exp(estimate))
 
-
+# Now to see how the model works on new data. Last fit sees how well the model fits on the testing data and shows us the concordance of this model.
 
 final_cox_fit <- last_fit(
   final_workflow, 
@@ -217,10 +273,14 @@ final_cox_fit <- last_fit(
   metrics = metric_set(concordance_survival) 
 )
 
+# and here is the model fit
+
 final_cox_fit %>% collect_metrics()
 ```
 
 ```{r}
+# Now lets compare with the model that didn't use lasso to see if this was all worth it
+
 final_fit_no_lasso <- fit(cox_workflow_no_lasso, training)
 Coeff_estimates_no_lasso <- pull_workflow_fit(final_fit_no_lasso) %>% tidy()
 
