@@ -23,12 +23,16 @@ library(tidymodels)
 library(glmnet)
 library(censored)
 library(here)
+library(skimr)
 ```
 
 ```{r}
 # Load data
-set.seed(12345)
+
+set.seed(123456789)
 load(here("data/modeling_project.rda"))
+
+# Here I'm just getting rid of all of the NAs in the survival columns (not censored data just the ones actually listed as NA)
 
 metabric_modeling <- metabric %>% 
   filter(!is.na(relapse_free_status_months) & !is.na(relapse))
@@ -37,15 +41,14 @@ metabric_modeling <- metabric %>%
 
 ```{r "Adding Time Varying Covariates"}
 
-metabric_modeling <-  metabric_modeling  %>% 
-  mutate(age_interval = cut(age_at_diagnosis, breaks = c(21.93, 30, 50, 70, 96.29)))
-  
+# I'm testing out the model the normal way to see if we satisfy the proportional hazards assumption, 
+# since we fail this assumption I am messing around with various combinations of time varying covariates and 
+# Stratification
 
 fullmodel <- coxph(
   Surv(relapse_free_status_months, relapse) ~ 
     pam50_claudin_low_subtype +
     age_at_diagnosis +
-    strata(cohort) +
     inferred_menopausal_state +
     lymph_nodes_examined_positive +
     npi_cat +
@@ -53,14 +56,15 @@ fullmodel <- coxph(
     tumor_size +
     tumor_stage +
     type_of_breast_surgery + 
-    strata(neoplasm_histologic_grade) +
-    strata(integrative_cluster) +
-    primary_tumor_laterality +
-    strata(x3_gene_classifier_subtype),
-  data = metabric_modeling, 
-  tt = function(x, t, ...) prod(x * log(t +0.001), na.rm = T))
+    strata(neoplasm_histologic_grade, cohort, integrative_cluster,
+           primary_tumor_laterality, x3_gene_classifier_subtype),
+    data = metabric_modeling)
 
 cox.zph(fullmodel)
+
+schoenfeld_residuals <- as_tibble(residuals(fullmodel, type = "schoenfeld"), )
+
+
 
 metabric_modeling <- metabric_modeling %>% 
   mutate(metabric_surv = survival::Surv(time = relapse_free_status_months + .001, event = relapse == 1), 
@@ -86,6 +90,9 @@ cox_model <- proportional_hazards(
   set_engine("glmnet") %>% 
   set_mode("censored regression")
 
+cox_model_no_lasso <- proportional_hazards() %>% 
+  set_engine("survival")
+
 ```
 
 ```{r}
@@ -93,10 +100,27 @@ cox_workflow <- workflow() %>%
   step_dummy(all_nominal_predictors()) %>% 
   step_unknown(all_nominal_predictors()) %>% 
   step_impute_median(all_numeric_predictors()) %>% 
-  add_model(cox_model) %>% 
-  add_formula(formula = metabric_surv ~  pam50_claudin_low_subtype +
+  add_variables(metabric_surv, 
+          c(
+            pam50_claudin_low_subtype,
+            age_at_diagnosis,
+            cohort,
+            inferred_menopausal_state,
+            lymph_nodes_examined_positive,
+            npi_cat,
+            chemotherapy,
+            tumor_size,
+            tumor_stage,
+            type_of_breast_surgery,
+            neoplasm_histologic_grade,
+            integrative_cluster,
+            primary_tumor_laterality,
+            x3_gene_classifier_subtype
+            )
+          ) %>% 
+  add_model(cox_model, 
+    formula = metabric_surv ~  pam50_claudin_low_subtype +
     age_at_diagnosis +
-    strata(cohort) +
     inferred_menopausal_state +
     lymph_nodes_examined_positive +
     npi_cat +
@@ -104,42 +128,71 @@ cox_workflow <- workflow() %>%
     tumor_size +
     tumor_stage +
     type_of_breast_surgery + 
-    strata(neoplasm_histologic_grade) +
-    strata(integrative_cluster) +
-    primary_tumor_laterality +
-    strata(x3_gene_classifier_subtype))
+    strata(neoplasm_histologic_grade, cohort, integrative_cluster,
+           primary_tumor_laterality, x3_gene_classifier_subtype))
 
+
+fit_test <- fit(cox_workflow, training)
+
+
+cox_workflow_no_lasso <- workflow() %>%
+  step_unknown(all_nominal_predictors(), "Missing") %>% 
+  add_variables(metabric_surv, 
+          c(
+            pam50_claudin_low_subtype,
+            age_at_diagnosis,
+            cohort,
+            inferred_menopausal_state,
+            lymph_nodes_examined_positive,
+            npi_cat,
+            chemotherapy,
+            tumor_size,
+            tumor_stage,
+            type_of_breast_surgery,
+            neoplasm_histologic_grade,
+            integrative_cluster,
+            primary_tumor_laterality,
+            x3_gene_classifier_subtype
+            )
+          ) %>% 
+  add_model(cox_model_no_lasso,
+            formula = metabric_surv ~  pam50_claudin_low_subtype +
+            age_at_diagnosis +
+            strata(cohort) +
+            inferred_menopausal_state +
+            lymph_nodes_examined_positive +
+            npi_cat +
+            chemotherapy +
+            tumor_size +
+            tumor_stage +
+            type_of_breast_surgery + 
+            strata(neoplasm_histologic_grade) +
+            strata(integrative_cluster) +
+            strata(primary_tumor_laterality) +
+            strata(x3_gene_classifier_subtype))
 
 ```
 
 ```{r}
-survival_metrics <- metric_set(brier_survival, concordance_survival, roc_auc_survival)
+survival_metrics <- metric_set(concordance_survival)
 
-cv_folds <- vfold_cv(training, v = 10)
+cv_folds <- vfold_cv(training, v = 2)
 
-grid <- grid_regular(penalty(), levels = 10)
+grid <- grid_regular(penalty(), levels = 2)
 
-# tune_results <- tune_grid(
-#   cox_workflow,
-#   grid = grid,
-#   resamples = cv_folds,
-#   metrics = survival_metrics,
-#   eval_time = seq(10, max(training$metabric_surv[,1]), by = 100)
-# )
-# 
-# save(tune_results, file = here("data", "tune_results.rda"))
+tune_results <- tune_grid(
+  cox_workflow,
+  grid = grid,
+  resamples = cv_folds,
+  metrics = survival_metrics,
+)
+
+save(tune_results, file = here("data", "tune_results.rda"))
 
 load(file = here("data", "tune_results.rda"))
 
 best_penalty_concord <- tune_results %>%
   select_best(metric = "concordance_survival")
-
-best_penalty_brier <- tune_results %>%
-  select_best(metric = "brier_survival")
-
-best_penalty_roc_auc <- tune_results %>%
-  select_best(metric = "roc_auc_survival")
-
 
 
 ```
@@ -149,19 +202,34 @@ final_workflow <- finalize_workflow(cox_workflow, best_penalty_concord)
 
 final_fit <- fit(final_workflow, training)
 
+
+
 Coeff_estimates <- pull_workflow_fit(final_fit) %>% tidy() %>% filter(estimate != 0)
 
 Coeff_estimates <- Coeff_estimates %>% select(term, estimate) %>% 
   mutate(exp_estim = exp(estimate))
 
 
+
 final_cox_fit <- last_fit(
   final_workflow, 
   split = split,
-  metrics = metric_set(concordance_survival), 
+  metrics = metric_set(concordance_survival) 
 )
 
 final_cox_fit %>% collect_metrics()
 ```
 
+```{r}
+final_fit_no_lasso <- fit(cox_workflow_no_lasso, training)
+Coeff_estimates_no_lasso <- pull_workflow_fit(final_fit_no_lasso) %>% tidy()
+
+final_cox_fit_no_lasso <- last_fit(
+  cox_workflow_no_lasso, 
+  split = split,
+  metrics = metric_set(concordance_survival) 
+)
+
+final_cox_fit_no_lasso %>% collect_metrics()
+```
 
