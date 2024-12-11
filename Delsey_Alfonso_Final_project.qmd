@@ -266,7 +266,7 @@ Coeff_estimates <- Coeff_estimates %>% select(term, estimate) %>%
 final_cox_fit <- last_fit(
   final_workflow, 
   split = split,
-  metrics = metric_set(concordance_survival) 
+  metrics = metric_set(concordance_survival, auc_roc) 
 )
 
 # and here is the model fit
@@ -292,10 +292,71 @@ final_cox_fit_no_lasso <- last_fit(
 
 final_cox_fit_no_lasso %>% collect_metrics()
 
+# save(final_cox_fit_no_lasso, final_cox_fit, final_fit, final_fit_no_lasso, Coeff_estimates_no_lasso, Coeff_estimates, file = here("data", "Final_proj_results.rda"))
+
+
 
 # I think the biggest advantage of the lasso regularization is that it has fixed a lot of the multicolinearity issues
 # If you look at the metrics it seems like they are very similar but looking at the e^coefficient estimates
 # We can see that the no lasso model has some insanely huge coefficients where in the lasso model they all seem
 # reasonable. So I think this is the big takeaway from the project.
+```
+
+```{r}
+
+
+```
+```{r}
+val_pred2 <- augment(final_fit_no_lasso, testing, eval_time = time_points)
+
+roc_scores2 <-
+  val_pred %>% 
+  roc_auc_survival(truth = metabric_surv, .pred)
+roc_scores
+
+roc_scores2 %>% 
+  ggplot(aes(.eval_time, .estimate)) + 
+  geom_hline(yintercept = 1 / 2, col = "red", lty = 3) +
+  geom_line() +
+  geom_point() + 
+  labs(x = "time", y = "ROC AUC", title= "ROC AUC by time for Non-LASSO model")
+
+```
+
+```{r}
+
+best_penalty_concord$penalty <- 0.1
+
+final_workflow2 <- finalize_workflow(cox_workflow, best_penalty_concord)
+
+# And I am fitting this new model
+
+final_fit2 <- fit(final_workflow2, training)
+
+# and here it is
+# the model fit on the training data and here are the coefficients. I filtered out the ones that lasso shrunk down to zero to see what we have left.
+
+Coeff_estimates2 <- pull_workflow_fit(final_fit2) %>% tidy() %>% filter(estimate != 0)
+
+# Here I am just exponentiating so we can interpret the coefficients
+
+Coeff_estimates2 <- Coeff_estimates2 %>% select(term, estimate) %>% 
+  mutate(exp_estim = exp(estimate))
+
+# Now to see how the model works on new data. Last fit sees how well the model fits on the testing data and shows us the concordance of this model.
+
+final_cox_fit2 <- last_fit(
+  final_workflow2, 
+  split = split,
+  metrics = metric_set(concordance_survival) 
+)
+
+# and here is the model fit
+
+final_cox_fit2 %>% collect_metrics()
+
+concordance(coxph(metabric_surv ~ lymph_nodes_examined_positive + strata(x3_gene_classifier_subtype), data = training), newdata = testing)
+
+
 ```
 
